@@ -165,10 +165,11 @@ if ( !class_exists( 'HCPP') ) {
             $xpath = $this->do_action( 'hcpp_all_xpath', $xpath );
             $dom = $xpath->document;
 
-            // Some plugins or PHP HTML5 encoders can convert URL characters like
-            // '=' and '.' to named entities (e.g. &equals;, &period;). Normalize
-            // URL-like attributes before final render so panel links remain valid.
-            $this->normalize_url_entities_in_document( $dom );
+            // Some plugins or PHP HTML5 encoders can convert visible text and
+            // URL characters to named entities (e.g. &lowbar;, &commat;,
+            // &equals;, &period;). Normalize them before final render so the
+            // panel UI remains readable and links remain valid.
+            $this->normalize_html_entities_in_document( $dom );
             $html = $dom->saveHTML();
 
             // Run the path specific actions for html
@@ -190,22 +191,51 @@ if ( !class_exists( 'HCPP') ) {
          *
          * @param DOMDocument $dom The DOM document to normalize.
          */
-        public function normalize_url_entities_in_document( $dom ) {
+        public function normalize_html_entities_in_document( $dom ) {
             if ( !( $dom instanceof DOMDocument ) ) {
                 return;
             }
 
             $entity_map = [
+                '&lowbar;' => '_',
+                '&commat;' => '@',
                 '&equals;' => '=',
                 '&period;' => '.',
+                // Also handle common double-escaped forms (&amp;...)
+                '&amp;lowbar;' => '_',
+                '&amp;commat;' => '@',
+                '&amp;equals;' => '=',
+                '&amp;period;' => '.',
+                // Numeric entities possibly double-escaped
+                '&amp;#95;' => '_',
+                '&amp;#64;' => '@',
+                '&amp;#61;' => '=',
+                '&amp;#46;' => '.',
+                '&#95;' => '_',
+                '&#64;' => '@',
                 '&#61;' => '=',
                 '&#x3D;' => '=',
+                '&#x5F;' => '_',
+                '&#x40;' => '@',
                 '&#46;' => '.',
                 '&#x2E;' => '.',
             ];
 
             $xpath = new DOMXPath( $dom );
-            $nodes = $xpath->query( '//*[@href or @src or @action]' );
+            $textNodes = $xpath->query( '//text()[not(parent::script or parent::style)]' );
+            if ( $textNodes !== false ) {
+                foreach ( $textNodes as $textNode ) {
+                    $value = $textNode->nodeValue;
+                    $normalized = strtr( $value, $entity_map );
+                    $normalized = html_entity_decode( $normalized, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+                    $normalized = strtr( $normalized, $entity_map );
+                    if ( $normalized !== $value ) {
+                        $textNode->nodeValue = $normalized;
+                    }
+                }
+            }
+
+            $nodes = $xpath->query( '//*[@href or @src or @action or @title or @alt or @value or @placeholder]' );
             if ( $nodes === false ) {
                 return;
             }
@@ -628,6 +658,14 @@ if ( !class_exists( 'HCPP') ) {
                 'auto_prepend_file = /etc/hestiacp/hooks/pluginable.php'
             );
 
+            // Patch the internal Hestia PHP-FPM pool so the panel actually loads
+            // the pluginable prepend/append hooks after Hestia updates.
+            $this->patch_file(
+                '/usr/local/hestia/php/etc/php-fpm.conf',
+                "php_admin_value[session.save_path] = /usr/local/hestia/data/sessions\n",
+                "php_admin_value[session.save_path] = /usr/local/hestia/data/sessions\nphp_admin_value[auto_prepend_file] = /etc/hestiacp/hooks/pluginable.php\nphp_admin_value[auto_append_file] = /etc/hestiacp/hooks/pluginable.php"
+            );
+
             // Patch Hestia templates php-fpm templates ..templates/web/php-fpm/*.tpl
             $folderPath = "/usr/local/hestia/data/templates/web/php-fpm";
             $files = glob( "$folderPath/*.tpl" );
@@ -850,6 +888,7 @@ if ( !class_exists( 'HCPP') ) {
             shell_exec( 'rm -f /etc/hestiacp/local.conf' );
             shell_exec( 'rm -f /usr/local/hestia/bin/v-invoke-plugin' );
             $this->restore_backup( '/usr/local/hestia/php/lib/php.ini' );
+            $this->restore_backup( '/usr/local/hestia/php/etc/php-fpm.conf' );
 
             // Remove jQuery 3.7.1
             shell_exec( 'rm -f /usr/local/hestia/web/js/dist/jquery-3.7.1.min.js' );
