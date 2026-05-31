@@ -164,6 +164,11 @@ if ( !class_exists( 'HCPP') ) {
             // Run all pages actions after specifics for xpath
             $xpath = $this->do_action( 'hcpp_all_xpath', $xpath );
             $dom = $xpath->document;
+
+            // Some plugins or PHP HTML5 encoders can convert URL characters like
+            // '=' and '.' to named entities (e.g. &equals;, &period;). Normalize
+            // URL-like attributes before final render so panel links remain valid.
+            $this->normalize_url_entities_in_document( $dom );
             $html = $dom->saveHTML();
 
             // Run the path specific actions for html
@@ -174,6 +179,53 @@ if ( !class_exists( 'HCPP') ) {
             // Run all pages actions after specifics for html
             $html = $this->do_action( 'hcpp_all_html', $html );
             echo $html;            
+        }
+
+        /**
+         * Normalize encoded URL characters in common link attributes.
+         *
+         * This prevents broken query strings like:
+         *   /login/?loginas&amp;equals;api&amp;token&amp;equals;...
+         * while keeping DOM serialization responsible for final escaping.
+         *
+         * @param DOMDocument $dom The DOM document to normalize.
+         */
+        public function normalize_url_entities_in_document( $dom ) {
+            if ( !( $dom instanceof DOMDocument ) ) {
+                return;
+            }
+
+            $entity_map = [
+                '&equals;' => '=',
+                '&period;' => '.',
+                '&#61;' => '=',
+                '&#x3D;' => '=',
+                '&#46;' => '.',
+                '&#x2E;' => '.',
+            ];
+
+            $xpath = new DOMXPath( $dom );
+            $nodes = $xpath->query( '//*[@href or @src or @action]' );
+            if ( $nodes === false ) {
+                return;
+            }
+
+            foreach ( $nodes as $node ) {
+                foreach ( ['href', 'src', 'action'] as $attr ) {
+                    if ( !$node->hasAttribute( $attr ) ) {
+                        continue;
+                    }
+
+                    $value = $node->getAttribute( $attr );
+                    $normalized = strtr( $value, $entity_map );
+                    $normalized = html_entity_decode( $normalized, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+                    $normalized = strtr( $normalized, $entity_map );
+
+                    if ( $normalized !== $value ) {
+                        $node->setAttribute( $attr, $normalized );
+                    }
+                }
+            }
         }
 
         /**
